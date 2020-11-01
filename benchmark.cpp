@@ -7,6 +7,7 @@
 #include <sstream>
 
 #include <boost/lexical_cast.hpp>
+#include <boost/algorithm/string.hpp>
 
 #include <thrift/transport/TBufferTransports.h>
 #include <thrift/protocol/TBinaryProtocol.h>
@@ -17,6 +18,8 @@
 
 #include <capnp/message.h>
 #include <capnp/serialize.h>
+
+#include <cxxopts.hpp>
 
 #include "protobuf/test.pb.h"
 #include "capnproto/test.capnp.h"
@@ -31,7 +34,143 @@
 
 enum class ThriftSerializationProto { Binary, Compact };
 
+struct Args {
+    std::size_t iterations = 0;
+    std::set<std::string> serializers;
+    bool csv = false;
+};
+
+struct Result {
+    Result(std::string name, std::string version, size_t size, int64_t time)
+        : name(name)
+        , version(version)
+        , size(size)
+        , time(time)
+    {
+    }
+
+    Result(std::string name, uint64_t version, size_t size, int64_t time)
+        : name(name)
+        , version(boost::lexical_cast<std::string>(version))
+        , size(size)
+        , time(time)
+    {
+    }
+
+    std::string name;
+    std::string version;
+    size_t size = 0;
+    int64_t time = 0;
+};
+
+// clang-format off
+const std::set<std::string> valid_serializers = {
+    "thrift-binary",
+    "thrift-compact",
+    "protobuf",
+    "boost",
+    "msgpack",
+    "cereal",
+    "avro",
+    "capnproto",
+    "flatbuffers",
+    "yas",
+    "yas-compact"
+};
+// clang-format on
+
 void
+print_results(Args args, std::vector<Result> results)
+{
+    if (args.csv) { // print CSV header
+        std::cout << "serializer,version,iterations,size,time" << std::endl;
+    }
+
+    for (const auto& result : results) {
+        if (args.csv) {
+            std::cout << result.name << "," << result.version << "," << args.iterations << "," << result.size << ","
+                      << result.time << std::endl;
+        } else {
+            std::cout << "Serializer: " << result.name << std::endl;
+            std::cout << "Version   : " << result.version << std::endl;
+            std::cout << "Iterations: " << args.iterations << std::endl;
+            std::cout << "Size      : " << result.size << " bytes" << std::endl;
+            std::cout << "Time      : " << result.time << " milliseconds" << std::endl;
+            std::cout << std::endl;
+        }
+    }
+}
+
+void
+print_supported_serializers()
+{
+    std::cerr << std::endl << "Supported serializers are:" << std::endl;
+    for (const auto& s : valid_serializers) {
+        std::cout << "  * " << s << std::endl;
+    }
+    std::cout << std::endl;
+}
+
+Args
+parse_args(int argc, char** argv)
+{
+    cxxopts::Options args("benchmark", "Benchmark various C++ serializers");
+
+    // clang-format off
+    args.add_options()
+        ("h,help", "show this help and exit")
+        ("l,list", "show list of supported serializers")
+        ("c,csv", "output in CSV format")
+        ("i,iterations", "number of serialize/deserialize iterations", cxxopts::value<std::size_t>())
+        ("s,serializers", "comma separated list of serializers to benchmark", cxxopts::value<std::string>())
+        ;
+    // clang-format on
+
+    Args opts;
+
+    try {
+        auto parsed_opts = args.parse(argc, argv);
+        if (parsed_opts.count("help")) {
+            std::cout << args.help() << std::endl;
+            exit(EXIT_SUCCESS);
+        }
+
+        if (parsed_opts.count("list")) {
+            print_supported_serializers();
+            exit(EXIT_SUCCESS);
+        }
+
+        if (parsed_opts.count("iterations") == 0) {
+            std::cerr << "Not all required option specified! Please run with -h for available options." << std::endl;
+            exit(EXIT_FAILURE);
+        }
+
+        if (parsed_opts.count("serializers")) {
+            boost::split(opts.serializers, parsed_opts["serializers"].as<std::string>(), boost::is_any_of(","));
+            for (const auto& serializer : opts.serializers) {
+                auto exists = valid_serializers.find(serializer);
+                if (exists == valid_serializers.end()) {
+                    std::cerr << "Serializer '" << serializer << "' is not supported by this benchmark." << std::endl;
+                    print_supported_serializers();
+                    exit(EXIT_FAILURE);
+                }
+            }
+        }
+
+        opts.iterations = parsed_opts["iterations"].as<std::size_t>();
+
+        if (parsed_opts.count("csv")) {
+            opts.csv = true;
+        }
+    } catch (std::exception& exc) {
+        std::cerr << exc.what() << std::endl;
+        exit(EXIT_FAILURE);
+    }
+
+    return opts;
+}
+
+Result
 thrift_serialization_test(size_t iterations, ThriftSerializationProto proto = ThriftSerializationProto::Binary)
 {
     using apache::thrift::protocol::TBinaryProtocol;
@@ -89,13 +228,10 @@ thrift_serialization_test(size_t iterations, ThriftSerializationProto proto = Th
     std::string tag;
 
     if (proto == ThriftSerializationProto::Binary) {
-        tag = "thrift-binary:";
+        tag = "thrift-binary";
     } else if (proto == ThriftSerializationProto::Compact) {
-        tag = "thrift-compact:";
+        tag = "thrift-compact";
     }
-
-    std::cout << tag << " version = " << PACKAGE_VERSION << std::endl;
-    std::cout << tag << " size = " << serialized.size() << " bytes" << std::endl;
 
     auto start = std::chrono::high_resolution_clock::now();
     for (size_t i = 0; i < iterations; i++) {
@@ -119,10 +255,10 @@ thrift_serialization_test(size_t iterations, ThriftSerializationProto proto = Th
     auto finish = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finish - start).count();
 
-    std::cout << tag << " time = " << duration << " milliseconds" << std::endl << std::endl;
+    return Result(tag, PACKAGE_VERSION, serialized.size(), duration);
 }
 
-void
+Result
 protobuf_serialization_test(size_t iterations)
 {
     using namespace protobuf_test;
@@ -148,9 +284,6 @@ protobuf_serialization_test(size_t iterations)
         throw std::logic_error("protobuf's case: deserialization failed");
     }
 
-    std::cout << "protobuf: version = " << GOOGLE_PROTOBUF_VERSION << std::endl;
-    std::cout << "protobuf: size = " << serialized.size() << " bytes" << std::endl;
-
     auto start = std::chrono::high_resolution_clock::now();
     for (size_t i = 0; i < iterations; i++) {
         serialized.clear();
@@ -160,10 +293,10 @@ protobuf_serialization_test(size_t iterations)
     auto finish = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finish - start).count();
 
-    std::cout << "protobuf: time = " << duration << " milliseconds" << std::endl << std::endl;
+    return Result("protobuf", GOOGLE_PROTOBUF_VERSION, serialized.size(), duration);
 }
 
-void
+Result
 capnproto_serialization_test(size_t iterations)
 {
     using namespace capnp_test;
@@ -195,9 +328,6 @@ capnproto_serialization_test(size_t iterations)
         size += segment.asBytes().size();
     }
 
-    std::cout << "capnproto: version = " << CAPNP_VERSION << std::endl;
-    std::cout << "capnproto: size = " << size << " bytes" << std::endl;
-
     auto start = std::chrono::high_resolution_clock::now();
     for (size_t i = 0; i < iterations; i++) {
         capnp::MallocMessageBuilder message;
@@ -223,10 +353,10 @@ capnproto_serialization_test(size_t iterations)
     auto finish = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finish - start).count();
 
-    std::cout << "capnproto: time = " << duration << " milliseconds" << std::endl << std::endl;
+    return Result("capnproto", CAPNP_VERSION, size, duration);
 }
 
-void
+Result
 boost_serialization_test(size_t iterations)
 {
     using namespace boost_test;
@@ -250,9 +380,6 @@ boost_serialization_test(size_t iterations)
         throw std::logic_error("boost's case: deserialization failed");
     }
 
-    std::cout << "boost: version = " << BOOST_VERSION << std::endl;
-    std::cout << "boost: size = " << serialized.size() << " bytes" << std::endl;
-
     auto start = std::chrono::high_resolution_clock::now();
     for (size_t i = 0; i < iterations; i++) {
         serialized.clear();
@@ -262,10 +389,10 @@ boost_serialization_test(size_t iterations)
     auto finish = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finish - start).count();
 
-    std::cout << "boost: time = " << duration << " milliseconds" << std::endl << std::endl;
+    return Result("boost", BOOST_VERSION, serialized.size(), duration);
 }
 
-void
+Result
 msgpack_serialization_test(size_t iterations)
 {
     using namespace msgpack_test;
@@ -296,9 +423,6 @@ msgpack_serialization_test(size_t iterations)
         throw std::logic_error("msgpack's case: deserialization failed");
     }
 
-    std::cout << "msgpack: version = " << msgpack_version() << std::endl;
-    std::cout << "msgpack: size = " << serialized.size() << " bytes" << std::endl;
-
     auto start = std::chrono::high_resolution_clock::now();
     for (size_t i = 0; i < iterations; i++) {
         sbuf.clear();
@@ -310,10 +434,10 @@ msgpack_serialization_test(size_t iterations)
     auto finish = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finish - start).count();
 
-    std::cout << "msgpack: time = " << duration << " milliseconds" << std::endl << std::endl;
+    return Result("msgpack", msgpack_version(), serialized.size(), duration);
 }
 
-void
+Result
 cereal_serialization_test(size_t iterations)
 {
     using namespace cereal_test;
@@ -337,8 +461,6 @@ cereal_serialization_test(size_t iterations)
         throw std::logic_error("cereal's case: deserialization failed");
     }
 
-    std::cout << "cereal: size = " << serialized.size() << " bytes" << std::endl;
-
     auto start = std::chrono::high_resolution_clock::now();
     for (size_t i = 0; i < iterations; i++) {
         serialized.clear();
@@ -348,10 +470,10 @@ cereal_serialization_test(size_t iterations)
     auto finish = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finish - start).count();
 
-    std::cout << "cereal: time = " << duration << " milliseconds" << std::endl << std::endl;
+    return Result("cereal", "", serialized.size(), duration);
 }
 
-void
+Result
 avro_serialization_test(size_t iterations)
 {
     using namespace avro_test;
@@ -380,11 +502,10 @@ avro_serialization_test(size_t iterations)
     decoder->init(*in);
     avro::decode(*decoder, r2);
 
-    if (r1.ids != r2.ids || r1.strings != r2.strings || r2.ids.size() != kIntegers.size() || r2.strings.size() != kStringsCount) {
+    if (r1.ids != r2.ids || r1.strings != r2.strings || r2.ids.size() != kIntegers.size()
+        || r2.strings.size() != kStringsCount) {
         throw std::logic_error("avro's case: deserialization failed");
     }
-
-    std::cout << "avro: size = " << serialized_size << " bytes" << std::endl;
 
     auto start = std::chrono::high_resolution_clock::now();
     for (size_t i = 0; i < iterations; i++) {
@@ -401,10 +522,10 @@ avro_serialization_test(size_t iterations)
     auto finish = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finish - start).count();
 
-    std::cout << "avro: time = " << duration << " milliseconds" << std::endl << std::endl;
+    return Result("avro", "", serialized_size, duration);
 }
 
-void
+Result
 flatbuffers_serialization_test(size_t iterations)
 {
     using namespace flatbuffers_test;
@@ -432,7 +553,7 @@ flatbuffers_serialization_test(size_t iterations)
         throw std::logic_error("flatbuffer's case: deserialization failed");
     }
 
-    std::cout << "flatbuffers: size = " << builder.GetSize() << " bytes" << std::endl;
+    auto size = builder.GetSize();
 
     builder.ReleaseBufferPointer();
 
@@ -461,11 +582,14 @@ flatbuffers_serialization_test(size_t iterations)
     auto finish = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finish - start).count();
 
-    std::cout << "flatbuffers: time = " << duration << " milliseconds" << std::endl << std::endl;
+    auto version = FLATBUFFERS_STRING(FLATBUFFERS_VERSION_MAJOR) "." FLATBUFFERS_STRING(
+        FLATBUFFERS_VERSION_MINOR) "." FLATBUFFERS_STRING(FLATBUFFERS_VERSION_REVISION);
+
+    return Result("flatbuffers", version, size, duration);
 }
 
 template <std::size_t opts>
-void
+Result
 yas_serialization_test(size_t iterations)
 {
     using namespace yas_test;
@@ -489,12 +613,12 @@ yas_serialization_test(size_t iterations)
         throw std::logic_error("yas' case: deserialization failed");
     }
 
+    std::string tag;
+
     if (opts & yas::compacted) {
-        std::cout << "yas-compact: version = " << YAS_VERSION_STRING << std::endl;
-        std::cout << "yas-compact: size = " << serialized.size() << " bytes" << std::endl;
+        tag = "yas-compact";
     } else {
-        std::cout << "yas: version = " << YAS_VERSION_STRING << std::endl;
-        std::cout << "yas: size = " << serialized.size() << " bytes" << std::endl;
+        tag = "yas";
     }
 
     auto start = std::chrono::high_resolution_clock::now();
@@ -510,11 +634,7 @@ yas_serialization_test(size_t iterations)
     auto finish = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(finish - start).count();
 
-    if (opts & yas::compacted) {
-        std::cout << "yas-compact: time = " << duration << " milliseconds" << std::endl << std::endl;
-    } else {
-        std::cout << "yas: time = " << duration << " milliseconds" << std::endl << std::endl;
-    }
+    return Result(tag, YAS_VERSION_STRING, serialized.size(), duration);
 }
 
 int
@@ -522,85 +642,63 @@ main(int argc, char** argv)
 {
     GOOGLE_PROTOBUF_VERIFY_VERSION;
 
-    if (argc < 2) {
-        std::cout << "usage: " << argv[0]
-                  << " N [thrift-binary thrift-compact protobuf boost msgpack cereal avro capnproto flatbuffers yas yas-compact]";
-        std::cout << std::endl << std::endl;
-        std::cout << "arguments: " << std::endl;
-        std::cout << " N  -- number of iterations" << std::endl << std::endl;
-        return EXIT_SUCCESS;
-    }
+    auto args = parse_args(argc, argv);
 
-    size_t iterations;
+    /*std::cout << "total size: " << sizeof(kIntegerValue) * kIntegersCount + kStringValue.size() * kStringsCount <<
+     * std::endl;*/
+
+    std::vector<Result> results;
 
     try {
-        iterations = boost::lexical_cast<size_t>(argv[1]);
-    } catch (std::exception& exc) {
-        std::cerr << "Error: " << exc.what() << std::endl;
-        std::cerr << "First positional argument must be an integer." << std::endl;
-        return EXIT_FAILURE;
-    }
-
-    std::set<std::string> names;
-
-    if (argc > 2) {
-        for (int i = 2; i < argc; i++) {
-            names.insert(argv[i]);
-        }
-    }
-
-    std::cout << "performing " << iterations << " iterations" << std::endl << std::endl;
-
-    /*std::cout << "total size: " << sizeof(kIntegerValue) * kIntegersCount + kStringValue.size() * kStringsCount << std::endl;*/
-
-    try {
-        if (names.empty() || names.find("thrift-binary") != names.end()) {
-            thrift_serialization_test(iterations, ThriftSerializationProto::Binary);
+        if (args.serializers.empty() || args.serializers.find("thrift-binary") != args.serializers.end()) {
+            results.push_back(thrift_serialization_test(args.iterations, ThriftSerializationProto::Binary));
         }
 
-        if (names.empty() || names.find("thrift-compact") != names.end()) {
-            thrift_serialization_test(iterations, ThriftSerializationProto::Compact);
+        if (args.serializers.empty() || args.serializers.find("thrift-compact") != args.serializers.end()) {
+            results.push_back(thrift_serialization_test(args.iterations, ThriftSerializationProto::Compact));
         }
 
-        if (names.empty() || names.find("protobuf") != names.end()) {
-            protobuf_serialization_test(iterations);
+        if (args.serializers.empty() || args.serializers.find("protobuf") != args.serializers.end()) {
+            results.push_back(protobuf_serialization_test(args.iterations));
         }
 
-        if (names.empty() || names.find("capnproto") != names.end()) {
-            capnproto_serialization_test(iterations);
+        if (args.serializers.empty() || args.serializers.find("capnproto") != args.serializers.end()) {
+            results.push_back(capnproto_serialization_test(args.iterations));
         }
 
-        if (names.empty() || names.find("boost") != names.end()) {
-            boost_serialization_test(iterations);
+        if (args.serializers.empty() || args.serializers.find("boost") != args.serializers.end()) {
+            results.push_back(boost_serialization_test(args.iterations));
         }
 
-        if (names.empty() || names.find("msgpack") != names.end()) {
-            msgpack_serialization_test(iterations);
+        if (args.serializers.empty() || args.serializers.find("msgpack") != args.serializers.end()) {
+            results.push_back(msgpack_serialization_test(args.iterations));
         }
 
-        if (names.empty() || names.find("cereal") != names.end()) {
-            cereal_serialization_test(iterations);
+        if (args.serializers.empty() || args.serializers.find("cereal") != args.serializers.end()) {
+            results.push_back(cereal_serialization_test(args.iterations));
         }
 
-        if (names.empty() || names.find("avro") != names.end()) {
-            avro_serialization_test(iterations);
+        if (args.serializers.empty() || args.serializers.find("avro") != args.serializers.end()) {
+            results.push_back(avro_serialization_test(args.iterations));
         }
 
-        if (names.empty() || names.find("flatbuffers") != names.end()) {
-            flatbuffers_serialization_test(iterations);
+        if (args.serializers.empty() || args.serializers.find("flatbuffers") != args.serializers.end()) {
+            results.push_back(flatbuffers_serialization_test(args.iterations));
         }
 
-        if (names.empty() || names.find("yas") != names.end()) {
-            yas_serialization_test<yas::binary | yas::no_header>(iterations);
+        if (args.serializers.empty() || args.serializers.find("yas") != args.serializers.end()) {
+            results.push_back(yas_serialization_test<yas::binary | yas::no_header>(args.iterations));
         }
 
-        if (names.empty() || names.find("yas-compact") != names.end()) {
-            yas_serialization_test<yas::binary | yas::no_header | yas::compacted>(iterations);
+        if (args.serializers.empty() || args.serializers.find("yas-compact") != args.serializers.end()) {
+            results.push_back(yas_serialization_test<yas::binary | yas::no_header | yas::compacted>(args.iterations));
         }
     } catch (std::exception& exc) {
         std::cerr << "Error: " << exc.what() << std::endl;
         return EXIT_FAILURE;
     }
+
+    print_results(args, results);
 
     google::protobuf::ShutdownProtobufLibrary();
 

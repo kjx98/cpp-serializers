@@ -1,5 +1,5 @@
-project(cpp_serializers)
-cmake_minimum_required(VERSION 2.8 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.0 FATAL_ERROR)
+project(cpp_serializers LANGUAGES CXX VERSION 0.1.0)
 
 if (NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "Doesn't support non 64-bit platforms")
@@ -31,9 +31,6 @@ endif()
 
 include_directories(${cpp_serializers_SOURCE_DIR})
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -W -Wextra")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -W -Wextra")
-
 find_package(ZLIB)
 if (NOT ZLIB_FOUND)
     message(FATAL_ERROR "Couldn't find zlib library")
@@ -54,6 +51,18 @@ else()
     message(STATUS "Found libtool: ${LIBTOOL}")
 endif()
 
+set(CXXOPTS_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/external/cxxopts)
+ExternalProject_Add(
+    cxxopts
+    PREFIX ${CXXOPTS_PREFIX}
+    URL "https://github.com/jarro2783/cxxopts/archive/v2.1.2.tar.gz"
+    URL_MD5 "51af98ad0b7ec6fb7aa1cf96ea65fff8"
+    CMAKE_ARGS -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_INSTALL_PREFIX=${CXXOPTS_PREFIX}
+    LOG_UPDATE ON
+    LOG_BUILD ON
+    LOG_INSTALL ON
+)
+
 set(boost_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/external/boost)
 ExternalProject_Add(
     boost
@@ -71,7 +80,6 @@ ExternalProject_Add(
 )
 set(Boost_INCLUDE_DIRS ${boost_PREFIX})
 set(BOOST_LIBRARIES ${boost_PREFIX}/lib/libboost_serialization.a)
-include_directories(${Boost_INCLUDE_DIRS}/include)
 message(STATUS "Using Boost from ${Boost_INCLUDE_DIRS}/include")
 
 set(thrift_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/external/thrift)
@@ -89,7 +97,6 @@ ExternalProject_Add(
     LOG_BUILD ON
     LOG_INSTALL ON
 )
-include_directories(${thrift_PREFIX}/include)
 set(THRIFT_LIBRARIES ${thrift_PREFIX}/lib/libthrift.a)
 set(THRIFT_GENERATOR ${thrift_PREFIX}/bin/thrift)
 
@@ -105,7 +112,6 @@ ExternalProject_Add(
     LOG_BUILD ON
     LOG_INSTALL ON
 )
-include_directories(${msgpack_PREFIX}/include)
 set(MSGPACK_LIBRARIES ${msgpack_PREFIX}/lib/libmsgpackc.a)
 
 set(protobuf_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/external/protobuf)
@@ -122,7 +128,6 @@ ExternalProject_Add(
     LOG_BUILD ON
     LOG_INSTALL ON
 )
-include_directories(${protobuf_PREFIX}/include)
 set(PROTOBUF_LIBRARIES ${protobuf_PREFIX}/lib/libprotobuf.a)
 set(PROTOBUF_GENERATOR ${protobuf_PREFIX}/bin/protoc)
 
@@ -140,7 +145,6 @@ ExternalProject_Add(
     LOG_BUILD ON
     LOG_INSTALL ON
 )
-include_directories(${capnproto_PREFIX}/include)
 set(CAPNPROTO_LIBRARIES ${capnproto_PREFIX}/lib/libcapnp.a ${capnproto_PREFIX}/lib/libkj.a)
 set(CAPNPROTO_GENERATOR ${capnproto_PREFIX}/bin/capnp)
 set(CAPNPROTO_CPP_GENERATOR ${capnproto_PREFIX}/bin/capnpc-c++)
@@ -155,15 +159,14 @@ ExternalProject_Add(
     BUILD_COMMAND ""
     INSTALL_COMMAND mkdir -p ${cereal_PREFIX}/include/ && cp -r ${cereal_PREFIX}/src/cereal/include/cereal ${cereal_PREFIX}/include/
 )
-include_directories(${cereal_PREFIX}/include)
 
 set(avro_PREFIX ${CMAKE_CURRENT_BINARY_DIR}/external/avro)
 ExternalProject_Add(
     avro
     DEPENDS boost
     PREFIX ${avro_PREFIX}
-    URL "http://www.eu.apache.org/dist/avro/avro-1.8.2/avro-src-1.8.2.tar.gz"
-    URL_MD5 "cb56b43eb45c3db13a35b56f6df633e2"
+    URL "https://github.com/apache/avro/archive/release-1.8.2.tar.gz"
+    URL_MD5 "dcaa6eaa0c0854c535b9daf1c024cb35"
     CONFIGURE_COMMAND cmake -DBOOST_INCLUDEDIR=${boost_PREFIX}/include -DBOOST_LIBRARYDIR=${boost_PREFIX}/lib -DBoost_NO_SYSTEM_PATHS=ON -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_INSTALL_PREFIX=${avro_PREFIX} -DBUILD_SHARED_LIBS=OFF ${avro_PREFIX}/src/avro/lang/c++/
     # Due to some issues with using statically built boost libraries AND zlib in avro tests
     # build only necessary parts and install them in a very hackish way.
@@ -173,7 +176,6 @@ ExternalProject_Add(
     LOG_CONFIGURE ON
     LOG_BUILD ON
 )
-include_directories(${avro_PREFIX}/include)
 set(AVRO_LIBRARIES ${avro_PREFIX}/lib/libavrocpp_s.a)
 set(AVRO_GENERATOR ${avro_PREFIX}/bin/avrogencpp)
 
@@ -188,7 +190,6 @@ ExternalProject_Add(
     LOG_CONFIGURE ON
     LOG_BUILD ON
 )
-include_directories(${flatbuffers_PREFIX}/include)
 set(FLATBUFFERS_LIBRARIES ${flatbuffers_PREFIX}/lib/libflatbuffers.a)
 set(FLATBUFFERS_GENERATOR ${flatbuffers_PREFIX}/bin/flatc)
 
@@ -202,7 +203,6 @@ ExternalProject_Add(
     BUILD_COMMAND ""
     INSTALL_COMMAND mkdir -p ${yas_PREFIX}/include/ && cp -r ${yas_PREFIX}/src/yas/include/yas ${yas_PREFIX}/include/
 )
-include_directories(${yas_PREFIX}/include)
 
 set(LINKLIBS
     ${THRIFT_LIBRARIES}
@@ -305,6 +305,21 @@ add_executable(
     ${FLATBUFFERS_SERIALIZATION_SOURCES}
     ${YAS_SERIALIZATION_SOURCES}
 )
-add_dependencies(benchmark thrift msgpack protobuf capnproto boost cereal avro flatbuffers yas)
+add_dependencies(benchmark cxxopts thrift msgpack protobuf capnproto boost cereal avro flatbuffers yas)
 target_link_libraries(benchmark ${LINKLIBS})
-set_target_properties(benchmark PROPERTIES COMPILE_FLAGS "-std=c++14")
+target_include_directories(benchmark SYSTEM PRIVATE ${CXXOPTS_PREFIX}/include)
+target_include_directories(benchmark SYSTEM PRIVATE ${thrift_PREFIX}/include)
+target_include_directories(benchmark SYSTEM PRIVATE ${Boost_INCLUDE_DIRS}/include)
+target_include_directories(benchmark SYSTEM PRIVATE ${avro_PREFIX}/include)
+target_include_directories(benchmark SYSTEM PRIVATE ${protobuf_PREFIX}/include)
+target_include_directories(benchmark SYSTEM PRIVATE ${yas_PREFIX}/include)
+target_include_directories(benchmark SYSTEM PRIVATE ${msgpack_PREFIX}/include)
+target_include_directories(benchmark SYSTEM PRIVATE ${capnproto_PREFIX}/include)
+target_include_directories(benchmark SYSTEM PRIVATE ${cereal_PREFIX}/include)
+target_include_directories(benchmark SYSTEM PRIVATE ${flatbuffers_PREFIX}/include)
+target_compile_options(benchmark PRIVATE -W -Wall -Wextra)
+set_target_properties(benchmark PROPERTIES
+    CXX_STANDARD 14
+    CXX_STANDARD_REQUIRED YES
+    CXX_EXTENSIONS NO
+)
